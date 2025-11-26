@@ -12,6 +12,7 @@ load_dotenv(".env.local")
 CONTENT_FILE = "shared-data/razorpay_faq.json"
 LEADS_FILE = "shared-data/collected_leads.json"
 
+<<<<<<< HEAD
 
 def load_content():
     with open(CONTENT_FILE, "r") as f:
@@ -52,6 +53,15 @@ class SDR(Agent):
     async def on_start(self, session: AgentSession):
         await session.say(
             "👋 Hey! Welcome to Razorpay. What brought you here today?", allow_interruptions=True
+=======
+class Assistant(Agent):
+    def __init__(self) -> None:
+        super().__init__(
+            instructions="""You are a helpful voice AI assistant. The user is interacting with you via voice, even if you perceive the conversation as text.
+            You eagerly assist users with their questions by providing information from your extensive knowledge.
+            Your responses are concise, to the point, and without any complex formatting including emojis, asterisks, or other weird symbols.
+            You are curious, friendly, and have a sense of humor.""",
+>>>>>>> bf1cea65da5e9ea0ecfd17069ae6426e0b3438dc
         )
 
     def search_faq(self, msg: str):
