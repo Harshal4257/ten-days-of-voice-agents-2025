@@ -4,7 +4,7 @@
 
 Build a **fraud alert voice agent** for your favorite bank.
 
-For the **primary goal**, everything can run using your existing voice setup (no extra UI):
+For the **primary goal**, everything can run using your existing frontend voice setup (without telephony) :
 
 - You will create a **sample database** describing for a few suspicious transaction. 
 
@@ -197,8 +197,8 @@ After this, you should be able to:
 -----
 
 - Step 1: You only need the **primary goal** to complete Day 6; the **Advanced Goals** are for going the extra mile.
-- Step 2: **Successfully connect to Fraud Alert Voice Agent** in your browser and ask questions about company and answer questions to generate lead.
-- Step 3: **Record a short video** of your session with the agent and show the generated lead and summary.
-- Step 4: **Post the video on LinkedIn** with a description of what you did for the task on Day 5. Also, mention that you are building voice agent using the fastest TTS API - Murf Falcon. Mention that you are part of the **“Murf AI Voice Agent Challenge”** and don't forget to tag the official Murf AI handle. Also, use hashtags **#MurfAIVoiceAgentsChallenge** and **#10DaysofAIVoiceAgents**
+- Step 2: **Successfully connect to Fraud Alert Voice Agent** in your browser and go through fraud verification scenarios of `confirmed_safe`, `confirmed_fraud`, and `verification_failed`.
+- Step 3: **Record a short video** of your session with the agent and show the updated database on verification process.
+- Step 4: **Post the video on LinkedIn** with a description of what you did for the task on Day 6. Also, mention that you are building voice agent using the fastest TTS API - Murf Falcon. Mention that you are part of the **“Murf AI Voice Agent Challenge”** and don't forget to tag the official Murf AI handle. Also, use hashtags **#MurfAIVoiceAgentsChallenge** and **#10DaysofAIVoiceAgents**
 
-Once your agent is running and your LinkedIn post is live, you’ve completed Day 5.
+Once your agent is running and your LinkedIn post is live, you’ve completed Day 6.
