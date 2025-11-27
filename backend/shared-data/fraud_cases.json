@@ -1,0 +1,15 @@
+[
+    {
+      "userName": "John Doe",
+      "securityIdentifier": "12345",
+      "cardEnding": "4242",
+      "amount": "$249.99",
+      "merchant": "ABC Industries",
+      "location": "New York",
+      "timestamp": "2025-02-15 14:22",
+      "securityQuestion": "What is your favorite color?",
+      "securityAnswer": "blue",
+      "status": "pending_review"
+    }
+  ]
+  

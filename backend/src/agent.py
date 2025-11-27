@@ -1,126 +1,131 @@
 import json
+import uuid
 from dotenv import load_dotenv
-from livekit.agents import Agent, AgentSession, JobContext, JobProcess, WorkerOptions, cli, metrics, tokenize
+from livekit.agents import (
+    Agent,
+    AgentSession,
+    JobContext,
+    JobProcess,
+    WorkerOptions,
+    cli,
+    metrics,
+)
 from livekit.agents import RoomInputOptions, MetricsCollectedEvent
 from livekit.plugins import murf, silero, deepgram, google, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
-import uuid
-import json
 
 load_dotenv(".env.local")
 
-CONTENT_FILE = "shared-data/razorpay_faq.json"
-LEADS_FILE = "shared-data/collected_leads.json"
+FRAUD_DB_FILE = "shared-data/fraud_cases.json"
 
-<<<<<<< HEAD
 
-def load_content():
-    with open(CONTENT_FILE, "r") as f:
+# ---------- DB HELPERS ----------
+def load_fraud_cases():
+    with open(FRAUD_DB_FILE, "r") as f:
         return json.load(f)
 
 
-def save_lead(data):
-    try:
-        leads = []
-        try:
-            with open(LEADS_FILE, "r") as f:
-                leads = json.load(f)
-        except:
-            pass
-        leads.append(data)
-        with open(LEADS_FILE, "w") as f:
-            json.dump(leads, f, indent=2)
-    except Exception as e:
-        print("Lead save error:", e)
+def save_fraud_cases(cases):
+    with open(FRAUD_DB_FILE, "w") as f:
+        json.dump(cases, f, indent=2)
 
 
-class SDR(Agent):
+# -------------- FRAUD AGENT --------------
+class FraudAgent(Agent):
     def __init__(self):
-        super().__init__(instructions="You are a polite Sales Development Representative for Razorpay.")
-        self.content = load_content()
-        self.lead = {
-            "id": str(uuid.uuid4()),
-            "name": None,
-            "company": None,
-            "email": None,
-            "role": None,
-            "use_case": None,
-            "team_size": None,
-            "timeline": None
-        }
-        self.topic_asked = False
+        super().__init__(
+            instructions="You are a calm, professional fraud verification agent for a fictional bank. "
+                        "Never ask for full card numbers, passwords, or sensitive credentials."
+        )
+        self.active_case = None
+        self.stage = "ask_username"  # call flow stages
 
     async def on_start(self, session: AgentSession):
         await session.say(
-            "👋 Hey! Welcome to Razorpay. What brought you here today?", allow_interruptions=True
-=======
-class Assistant(Agent):
-    def __init__(self) -> None:
-        super().__init__(
-            instructions="""You are a helpful voice AI assistant. The user is interacting with you via voice, even if you perceive the conversation as text.
-            You eagerly assist users with their questions by providing information from your extensive knowledge.
-            Your responses are concise, to the point, and without any complex formatting including emojis, asterisks, or other weird symbols.
-            You are curious, friendly, and have a sense of humor.""",
->>>>>>> bf1cea65da5e9ea0ecfd17069ae6426e0b3438dc
+            "Hello, this is the Fraud Prevention Department from SafeBank. "
+            "We detected a suspicious transaction and need to verify a few details. "
+            "May I have your name to verify the case?",
+            allow_interruptions=True,
         )
 
-    def search_faq(self, msg: str):
-        msg = msg.lower()
-        for f in self.content["faq"]:
-            if any(keyword in msg for keyword in f["question"].lower().split()):
-                return f["answer"]
+    # ---------- LOAD CASE ----------
+    def find_case(self, name):
+        cases = load_fraud_cases()
+        for case in cases:
+            if case["userName"].lower() == name.lower():
+                return case
         return None
 
-    async def collect_field(self, session, msg, field, prompt):
-        if self.lead[field] is None:
-            self.lead[field] = msg
-            await session.say(prompt)
-            return True
-        return False
-
+    # ---------- MAIN LOGIC ----------
     async def on_response(self, response, session: AgentSession):
-        msg = response.text.strip()
+        msg = response.text.strip().lower()
 
-        # detect goodbye → end call
-        if any(x in msg.lower() for x in ["thanks", "bye", "that’s all", "done", "i'm done"]):
+        # --- Step 1: Get username ---
+        if self.stage == "ask_username":
+            self.active_case = self.find_case(msg)
+            if not self.active_case:
+                await session.say("I could not find any fraud cases under that name. Please try again.")
+                return
+
+            self.stage = "verification"
             await session.say(
-                f"Thanks {self.lead['name']}! Here's a quick summary: "
-                f"You are a {self.lead['role']} at {self.lead['company']}, "
-                f"interested in Razorpay for {self.lead['use_case']}. "
-                f"Timeline: {self.lead['timeline']}. I'll share more over email soon."
+                f"Thank you. Before we proceed, please answer this verification question: "
+                f"{self.active_case['securityQuestion']}"
             )
-            save_lead(self.lead)
             return
 
-        # try answering FAQ
-        found = self.search_faq(msg)
-        if found:
-            await session.say(found)
+        # --- Step 2: Verify security question ---
+        if self.stage == "verification":
+            if msg != self.active_case["securityAnswer"].lower():
+                self.active_case["status"] = "verification_failed"
+                save_fraud_cases(load_fraud_cases())
+                await session.say(
+                    "I’m sorry, that didn’t match our records. For security reasons, I cannot continue this verification."
+                )
+                return
 
-        # Lead capture flow
-        if await self.collect_field(session, msg, "name", "Nice! Which company are you from?"):
+            self.stage = "transaction"
+            await session.say(
+                f"Thank you for verifying. Here are the details of the suspicious transaction: "
+                f"A charge of {self.active_case['amount']} at {self.active_case['merchant']} "
+                f"in {self.active_case['location']} on {self.active_case['timestamp']}. "
+                f"The card used ends with {self.active_case['cardEnding']}. "
+                f"Did you make this transaction?"
+            )
             return
-        if await self.collect_field(session, msg, "company", "Cool — what’s your email so we stay in touch?"):
-            return
-        if await self.collect_field(session, msg, "email", "Your role in the company?"):
-            return
-        if await self.collect_field(session, msg, "role", "What's your use case for Razorpay?"):
-            return
-        if await self.collect_field(session, msg, "use_case", "How big is your team?"):
-            return
-        if await self.collect_field(session, msg, "team_size", "When are you planning to start? (now / soon / later)"):
-            return
-        if await self.collect_field(session, msg, "timeline", "Great! Feel free to ask anything else."):
+
+        # --- Step 3: Ask if transaction is legitimate ---
+        if self.stage == "transaction":
+            cases = load_fraud_cases()
+
+            if "yes" in msg:
+                self.active_case["status"] = "confirmed_safe"
+                await session.say("Thank you. We have marked this transaction as legitimate.")
+            else:
+                self.active_case["status"] = "confirmed_fraud"
+                await session.say(
+                    "Thanks for confirming. We have blocked your card and started a fraud dispute case. "
+                    "A new card will be issued shortly."
+                )
+
+            # Save updated case
+            for i, c in enumerate(cases):
+                if c["userName"] == self.active_case["userName"]:
+                    cases[i] = self.active_case
+            save_fraud_cases(cases)
+
+            await session.say("Your case has been updated. Thank you for your time. Stay safe!")
+            self.stage = "done"
             return
 
 
+# ---------- PREWARM ----------
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
 
+# ---------- ENTRYPOINT ----------
 async def entrypoint(ctx: JobContext):
-    ctx.log_context_fields = {"room": ctx.room.name}
-
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
         llm=google.LLM(),
@@ -134,17 +139,15 @@ async def entrypoint(ctx: JobContext):
 
     @session.on("metrics_collected")
     def _collect(ev: MetricsCollectedEvent):
-        metrics.log_metrics(ev.metrics)
         usage.collect(ev.metrics)
 
     await session.start(
-        agent=SDR(),
+        agent=FraudAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
-    await session.current_agent.on_start(session)
     await ctx.connect()
 
 
