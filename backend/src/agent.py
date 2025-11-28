@@ -1,5 +1,9 @@
 import json
 import uuid
+import os
+from datetime import datetime
+from typing import List, Dict, Any, Optional
+
 from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
@@ -16,115 +20,228 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 load_dotenv(".env.local")
 
-FRAUD_DB_FILE = "shared-data/fraud_cases.json"
+# ---------- FILE PATHS ----------
+CATALOG_FILE = "shared-data/catalog.json"
+ORDERS_DB_FILE = "shared-data/orders.json"
+
+BRAND_NAME = "QuickFresh"  # brand name for the assistant
 
 
-# ---------- DB HELPERS ----------
-def load_fraud_cases():
-    with open(FRAUD_DB_FILE, "r") as f:
+# ---------- CATALOG & ORDERS HELPERS ----------
+def _ensure_shared_data_dir():
+    dirname = os.path.dirname(CATALOG_FILE)
+    if dirname and not os.path.exists(dirname):
+        os.makedirs(dirname, exist_ok=True)
+
+
+def load_catalog() -> List[Dict[str, Any]]:
+    _ensure_shared_data_dir()
+    if not os.path.exists(CATALOG_FILE):
+        # Create a blank catalog if missing
+        with open(CATALOG_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f, indent=2)
+        return []
+    with open(CATALOG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def save_fraud_cases(cases):
-    with open(FRAUD_DB_FILE, "w") as f:
-        json.dump(cases, f, indent=2)
+def load_orders() -> List[Dict[str, Any]]:
+    _ensure_shared_data_dir()
+    if not os.path.exists(ORDERS_DB_FILE):
+        with open(ORDERS_DB_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f, indent=2)
+        return []
+    with open(ORDERS_DB_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-# -------------- FRAUD AGENT --------------
-class FraudAgent(Agent):
+def save_orders(orders: List[Dict[str, Any]]):
+    _ensure_shared_data_dir()
+    with open(ORDERS_DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(orders, f, indent=2)
+
+
+# ---------- SIMPLE RECIPE MAPPING ----------
+RECIPES = {
+    "peanut butter sandwich": {},
+    "pasta": {},
+    "simple breakfast": {},
+    "salad": {},
+    "cereal breakfast": {},
+}
+
+# ---------- ORDER STATUS FLOW ----------
+STATUS_FLOW = [
+    ("received", 0),
+    ("confirmed", 2),
+    ("being_prepared", 8),
+    ("out_for_delivery", 20),
+    ("delivered", 40),
+]
+
+
+def parse_int_from_text(text: str) -> Optional[int]:
+    text = text.lower()
+    for tok in text.split():
+        if tok.isdigit():
+            return int(tok)
+    words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+    for w, n in words.items():
+        if w in text:
+            return n
+    return None
+
+
+def update_order_status_based_on_time(order: Dict[str, Any]) -> None:
+    try:
+        created_dt = datetime.fromisoformat(order.get("created_at"))
+        minutes = (datetime.now() - created_dt).total_seconds() / 60.0
+        best_status = order.get("status", "received")
+        for status, min_minutes in STATUS_FLOW:
+            if minutes >= min_minutes:
+                best_status = status
+        order["status"] = best_status
+    except:
+        pass
+
+
+# ---------- AGENT IMPLEMENTATION ----------
+class GroceryOrderingAgent(Agent):
     def __init__(self):
         super().__init__(
-            instructions="You are a calm, professional fraud verification agent for a fictional bank. "
-                        "Never ask for full card numbers, passwords, or sensitive credentials."
+            instructions=(
+                f"You are a friendly food and grocery ordering assistant for {BRAND_NAME}. "
+                "Help customers add items to a cart, show cart, and place orders. "
+                "After checkout, allow tracking of order status using stored JSON data."
+            )
         )
-        self.active_case = None
-        self.stage = "ask_username"  # call flow stages
+        self.catalog = load_catalog()
+        self.orders = load_orders()
+        self.customer_name: Optional[str] = None
+        self.cart: Dict[str, float] = {}
+        self.state: str = "ask_name"
 
+    # --- Utility ---
+    def _get_item(self, text: str) -> Optional[Dict[str, Any]]:
+        text = text.lower()
+        for item in self.catalog:
+            if text in item["name"].lower() or text in item["id"].lower():
+                return item
+        return None
+
+    def _cart_items_detailed(self):
+        items = []
+        for item_id, qty in self.cart.items():
+            item = next((i for i in self.catalog if i["id"] == item_id), None)
+            if item:
+                items.append(
+                    {
+                        "id": item_id,
+                        "name": item["name"],
+                        "price": item["price"],
+                        "quantity": qty,
+                        "line_total": item["price"] * qty,
+                    }
+                )
+        return items
+
+    def _add_order(self):
+        order_id = str(uuid.uuid4())
+        detailed_items = self._cart_items_detailed()
+        total = sum(i["line_total"] for i in detailed_items)
+        order = {
+            "id": order_id,
+            "customer_name": self.customer_name,
+            "items": detailed_items,
+            "total": total,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "status": "received",
+        }
+        self.orders.append(order)
+        save_orders(self.orders)
+        return order
+
+    # --- Lifecycle ---
     async def on_start(self, session: AgentSession):
         await session.say(
-            "Hello, this is the Fraud Prevention Department from SafeBank. "
-            "We detected a suspicious transaction and need to verify a few details. "
-            "May I have your name to verify the case?",
+            f"Hi, welcome to {BRAND_NAME}! May I know your name?",
             allow_interruptions=True,
         )
 
-    # ---------- LOAD CASE ----------
-    def find_case(self, name):
-        cases = load_fraud_cases()
-        for case in cases:
-            if case["userName"].lower() == name.lower():
-                return case
-        return None
-
-    # ---------- MAIN LOGIC ----------
     async def on_response(self, response, session: AgentSession):
-        msg = response.text.strip().lower()
+        text = (response.text or "").lower().strip()
+        if not text:
+            return
 
-        # --- Step 1: Get username ---
-        if self.stage == "ask_username":
-            self.active_case = self.find_case(msg)
-            if not self.active_case:
-                await session.say("I could not find any fraud cases under that name. Please try again.")
-                return
-
-            self.stage = "verification"
+        # Step 1: Ask for name
+        if self.state == "ask_name":
+            self.customer_name = text.strip().title()
+            self.state = "ordering"
             await session.say(
-                f"Thank you. Before we proceed, please answer this verification question: "
-                f"{self.active_case['securityQuestion']}"
+                f"Nice to meet you, {self.customer_name}. What would you like to order first?",
+                allow_interruptions=True,
             )
             return
 
-        # --- Step 2: Verify security question ---
-        if self.stage == "verification":
-            if msg != self.active_case["securityAnswer"].lower():
-                self.active_case["status"] = "verification_failed"
-                save_fraud_cases(load_fraud_cases())
-                await session.say(
-                    "I’m sorry, that didn’t match our records. For security reasons, I cannot continue this verification."
-                )
-                return
-
-            self.stage = "transaction"
-            await session.say(
-                f"Thank you for verifying. Here are the details of the suspicious transaction: "
-                f"A charge of {self.active_case['amount']} at {self.active_case['merchant']} "
-                f"in {self.active_case['location']} on {self.active_case['timestamp']}. "
-                f"The card used ends with {self.active_case['cardEnding']}. "
-                f"Did you make this transaction?"
-            )
-            return
-
-        # --- Step 3: Ask if transaction is legitimate ---
-        if self.stage == "transaction":
-            cases = load_fraud_cases()
-
-            if "yes" in msg:
-                self.active_case["status"] = "confirmed_safe"
-                await session.say("Thank you. We have marked this transaction as legitimate.")
+        # Show cart
+        if "cart" in text:
+            if not self.cart:
+                await session.say("Your cart is empty.", allow_interruptions=True)
             else:
-                self.active_case["status"] = "confirmed_fraud"
-                await session.say(
-                    "Thanks for confirming. We have blocked your card and started a fraud dispute case. "
-                    "A new card will be issued shortly."
-                )
-
-            # Save updated case
-            for i, c in enumerate(cases):
-                if c["userName"] == self.active_case["userName"]:
-                    cases[i] = self.active_case
-            save_fraud_cases(cases)
-
-            await session.say("Your case has been updated. Thank you for your time. Stay safe!")
-            self.stage = "done"
+                msg = "; ".join(f"{d['quantity']} x {d['name']}" for d in self._cart_items_detailed())
+                await session.say(f"In your cart: {msg}", allow_interruptions=True)
             return
 
+        # Place order
+        if "checkout" in text or "place my order" in text:
+            if not self.cart:
+                await session.say("Your cart is empty.", allow_interruptions=True)
+                return
+            order = self._add_order()
+            self.cart.clear()
+            self.state = "finished"
+            await session.say(
+                f"Your order is placed! Order ID: {order['id']}. Status set to received.",
+                allow_interruptions=True,
+            )
+            return
 
-# ---------- PREWARM ----------
+        # Tracking
+        if "track" in text or "where is my order" in text:
+            if not self.orders:
+                await session.say("No previous order found.", allow_interruptions=True)
+                return
+            order = self.orders[-1]
+            update_order_status_based_on_time(order)
+            save_orders(self.orders)
+            await session.say(
+                f"Your latest order status is '{order['status']}'.",
+                allow_interruptions=True,
+            )
+            return
+
+        # Add items
+        item = self._get_item(text)
+        qty = parse_int_from_text(text) or 1
+        if item:
+            self.cart[item["id"]] = self.cart.get(item["id"], 0) + qty
+            await session.say(
+                f"Added {qty} × {item['name']} to your cart.",
+                allow_interruptions=True,
+            )
+            return
+
+        await session.say(
+            "I'm not sure what you mean. Please say an item name from the catalog.",
+            allow_interruptions=True,
+        )
+
+
+# ---------- LIVEKIT SETUP ----------
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
 
-# ---------- ENTRYPOINT ----------
 async def entrypoint(ctx: JobContext):
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
@@ -134,22 +251,18 @@ async def entrypoint(ctx: JobContext):
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=True,
     )
-
-    usage = metrics.UsageCollector()
-
-    @session.on("metrics_collected")
-    def _collect(ev: MetricsCollectedEvent):
-        usage.collect(ev.metrics)
-
     await session.start(
-        agent=FraudAgent(),
+        agent=GroceryOrderingAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
+    await session.current_agent.on_start(session)
     await ctx.connect()
 
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
+    cli.run_app(
+        WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm)
+    )
